@@ -40,70 +40,57 @@ export function useEstimateEditorMarginTiersController({
     });
   }, [editorDocument, documentScope]);
 
-  const handleCreateTier = useCallback(
-    async (payload: { threshold_cents: number; multiplier: number }) => {
-      if (!editorDocument.isCurrent(documentScope)) return;
-      setMarginTiersError(null);
-      setIsSavingMarginTiers(true);
-      try {
-        const data = await createMarginTierClient(payload);
-        applyConfirmedMarginTiers((tiers) => [...tiers, data].sort((left, right) => left.threshold_cents - right.threshold_cents));
-      } catch (error) {
-        if (!editorDocument.isCurrent(documentScope)) return;
-        setMarginTiersError(
-          error instanceof Error ? error.message : "Erreur création tranche."
-        );
-      } finally {
-        if (editorDocument.isCurrent(documentScope)) setIsSavingMarginTiers(false);
-      }
-    },
-    [applyConfirmedMarginTiers, editorDocument, documentScope]
-  );
-
-  const handleUpdateTier = useCallback(
-    async (
-      id: string,
-      updates: { threshold_cents?: number; multiplier?: number }
-    ) => {
-      if (!editorDocument.isCurrent(documentScope)) return;
-      setMarginTiersError(null);
-      setIsSavingMarginTiers(true);
-      try {
-        const data = await updateMarginTierClient(id, updates);
-        applyConfirmedMarginTiers((tiers) => tiers.map((tier) => tier.id === id ? data : tier)
-          .sort((left, right) => left.threshold_cents - right.threshold_cents));
-      } catch (error) {
-        if (!editorDocument.isCurrent(documentScope)) return;
-        setMarginTiersError(
-          error instanceof Error
-            ? error.message
-            : "Erreur mise à jour tranche."
-        );
-      } finally {
-        if (editorDocument.isCurrent(documentScope)) setIsSavingMarginTiers(false);
-      }
-    },
-    [applyConfirmedMarginTiers, editorDocument, documentScope]
-  );
-
-  const handleDeleteTier = useCallback(async (id: string) => {
+  /**
+   * One request of the drawer: the saving flag and the error around it, its confirmed result
+   * applied as soon as it lands, its error (or the fallback words) kept for the current document.
+   */
+  const runTierSave = useCallback(async <T,>(
+    fallbackMessage: string,
+    request: () => Promise<T>,
+    onSaved: (data: T) => void
+  ) => {
     if (!editorDocument.isCurrent(documentScope)) return;
     setMarginTiersError(null);
     setIsSavingMarginTiers(true);
     try {
-      await deleteMarginTierClient(id);
-      applyConfirmedMarginTiers((tiers) => tiers.filter((tier) => tier.id !== id));
+      onSaved(await request());
     } catch (error) {
       if (!editorDocument.isCurrent(documentScope)) return;
       setMarginTiersError(
-        error instanceof Error
-          ? error.message
-          : "Erreur suppression tranche."
+        error instanceof Error ? error.message : fallbackMessage
       );
     } finally {
       if (editorDocument.isCurrent(documentScope)) setIsSavingMarginTiers(false);
     }
-  }, [applyConfirmedMarginTiers, editorDocument, documentScope]);
+  }, [editorDocument, documentScope]);
+
+  const handleCreateTier = useCallback(
+    (payload: { threshold_cents: number; multiplier: number }) => runTierSave(
+      "Erreur création tranche.",
+      () => createMarginTierClient(payload),
+      (data) => applyConfirmedMarginTiers((tiers) => [...tiers, data].sort((left, right) => left.threshold_cents - right.threshold_cents))
+    ),
+    [applyConfirmedMarginTiers, runTierSave]
+  );
+
+  const handleUpdateTier = useCallback(
+    (
+      id: string,
+      updates: { threshold_cents?: number; multiplier?: number }
+    ) => runTierSave(
+      "Erreur mise à jour tranche.",
+      () => updateMarginTierClient(id, updates),
+      (data) => applyConfirmedMarginTiers((tiers) => tiers.map((tier) => tier.id === id ? data : tier)
+        .sort((left, right) => left.threshold_cents - right.threshold_cents))
+    ),
+    [applyConfirmedMarginTiers, runTierSave]
+  );
+
+  const handleDeleteTier = useCallback((id: string) => runTierSave(
+    "Erreur suppression tranche.",
+    () => deleteMarginTierClient(id),
+    () => applyConfirmedMarginTiers((tiers) => tiers.filter((tier) => tier.id !== id))
+  ), [applyConfirmedMarginTiers, runTierSave]);
 
   return {
     isSaving: isSavingMarginTiers,
