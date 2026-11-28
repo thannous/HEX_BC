@@ -226,6 +226,38 @@ export async function evaluateApprovalSummary(input: {
   return summary;
 }
 
+/** The fields of an authorized version and its project that the rules engine reads. */
+export function toRulesEngineInput(
+  version: VersionAccessRow,
+  project: EmbeddedApprovalProjectAccess
+) {
+  return {
+    version: {
+      id: version.id,
+      project_id: version.project_id,
+      total_ht_cents: version.total_ht_cents,
+      margin_bp: version.margin_bp,
+      margin_multiplier: version.margin_multiplier,
+      margin_mode: version.margin_mode,
+      discount_bp: version.discount_bp,
+      discount_amount_cents: version.discount_amount_cents,
+      gross_ht_cents: version.gross_ht_cents,
+      discount_applied_cents: version.discount_applied_cents,
+      tenant_id: version.tenant_id,
+      status: version.status,
+      updated_at: version.updated_at,
+      calc_engine_version: version.calc_engine_version,
+      content_revision: version.content_revision,
+      calc_snapshot_content_revision: version.calc_snapshot_content_revision,
+      calc_snapshot_context: version.calc_snapshot_context,
+    },
+    project: {
+      id: project.id,
+      client_name: project.client_name,
+    },
+  };
+}
+
 function toApprovalSummaryStorage(summary: EstimateApprovalSummaryCore): NonNullable<Json> {
   return {
     requiresApproval: summary.requiresApproval,
@@ -593,24 +625,32 @@ function toApprovalSummaryAuditMetadata(input: {
   } satisfies Json;
 }
 
+/**
+ * The service-role client that projects the approval summary and logs its events. Without it,
+ * production refuses; elsewhere the caller skips its writes.
+ */
+function requireApprovalProjectionClient() {
+  const client = createOptionalServiceRoleClient();
+  if (!client && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+
+  return client;
+}
+
 async function logEstimateApprovalEvent(input: {
   versionId: string;
   eventType:
     | "approval_rules_evaluated"
-    | "approval_status_changed"
-    | "approval_decided";
+    | "approval_status_changed";
   actorUserId: string | null;
   metadata?: Json;
   occurredAt?: string;
 }) {
-  const rpcClient = createOptionalServiceRoleClient();
+  const rpcClient = requireApprovalProjectionClient();
   if (!rpcClient) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
-      );
-    }
-
     return;
   }
 
@@ -649,7 +689,6 @@ export async function syncEstimateApprovalSummary(input: {
   version: VersionAccessRow;
   project: EmbeddedApprovalProjectAccess;
   trigger: ApprovalAuditTrigger;
-  actorUserId?: string | null;
 }): Promise<EstimateApprovalSummary> {
   // Lot 2, sous-lot 2.5 : une v3 a sa preuve de marque nette (D5) ; le moteur reste exigé en clair.
   requireEstimateEngineVersion(input.version);
@@ -690,30 +729,7 @@ export async function syncEstimateApprovalSummary(input: {
       tenantId: input.context.tenantId,
       fixedDiscountEvidence,
       v3MarginEvidence,
-      version: {
-        id: input.version.id,
-        project_id: input.version.project_id,
-        total_ht_cents: input.version.total_ht_cents,
-        margin_bp: input.version.margin_bp,
-        margin_multiplier: input.version.margin_multiplier,
-        margin_mode: input.version.margin_mode,
-        discount_bp: input.version.discount_bp,
-        discount_amount_cents: input.version.discount_amount_cents,
-        gross_ht_cents: input.version.gross_ht_cents,
-        discount_applied_cents: input.version.discount_applied_cents,
-        tenant_id: input.version.tenant_id,
-        status: input.version.status,
-        updated_at: input.version.updated_at,
-        calc_engine_version: input.version.calc_engine_version,
-        content_revision: input.version.content_revision,
-        calc_snapshot_content_revision:
-          input.version.calc_snapshot_content_revision,
-        calc_snapshot_context: input.version.calc_snapshot_context,
-      },
-      project: {
-        id: input.project.id,
-        client_name: input.project.client_name,
-      },
+      ...toRulesEngineInput(input.version, input.project),
       items,
       evaluatedAt,
       rulesWithApprovals,
@@ -733,103 +749,63 @@ export async function syncEstimateApprovalSummary(input: {
     stableJsonStringify(storedSummary) !== stableJsonStringify(nextSummary) ||
     !input.version.approval_evaluated_at;
 
-  if (!summaryChanged) {
-    return enrichEstimateApprovalSummary({
-      context: input.context,
-      version: input.version,
-      project: input.project,
-      items,
-      submissionReadiness,
-      reviewReads,
-      summary: {
-        ...coreSummary,
-        evaluatedAt: input.version.approval_evaluated_at ?? coreSummary.evaluatedAt,
-      },
-    });
-  }
-
   // Lot 2, sous-lot 2.7 (V3M01) : une version émise est en lecture seule
   // (guard_estimate_versions_readonly refuse toute colonne hors statut et sceau). Son résumé se
   // calcule pour l'affichage, sans l'écriture vouée au refus qui vidait le panneau d'approbation
   // d'une version jamais évaluée en brouillon (envoi par l'API).
-  if (input.version.status !== "draft") {
-    return enrichEstimateApprovalSummary({
-      context: input.context,
-      version: input.version,
-      project: input.project,
-      items,
-      submissionReadiness,
-      reviewReads,
-      summary: coreSummary,
-    });
-  }
+  if (summaryChanged && input.version.status === "draft") {
+    const serviceRoleClient = requireApprovalProjectionClient();
+    if (serviceRoleClient) {
+      const { error: updateError } = await serviceRoleClient
+        .from("estimate_versions")
+        .update({
+          approval_status: coreSummary.approvalStatus,
+          approval_summary: nextSummary,
+          approval_evaluated_at: coreSummary.evaluatedAt,
+        })
+        .eq("tenant_id", input.context.tenantId)
+        .eq("id", input.version.id);
 
-  const serviceRoleClient = createOptionalServiceRoleClient();
-  if (!serviceRoleClient) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
-      );
+      if (updateError) {
+        throw mapSupabaseError(
+          updateError,
+          "Impossible de projeter le résumé d'approbation."
+        );
+      }
+
+      await logEstimateApprovalEvent({
+        versionId: input.version.id,
+        eventType: "approval_rules_evaluated",
+        actorUserId: input.context.userId,
+        occurredAt: coreSummary.evaluatedAt,
+        metadata: toApprovalSummaryAuditMetadata({
+          summary: coreSummary,
+          trigger: input.trigger,
+          previousStatus,
+        }),
+      });
+
+      if (previousStatus !== coreSummary.approvalStatus) {
+        await logEstimateApprovalEvent({
+          versionId: input.version.id,
+          eventType: "approval_status_changed",
+          actorUserId: input.context.userId,
+          occurredAt: coreSummary.evaluatedAt,
+          metadata: {
+            previousStatus,
+            nextStatus: coreSummary.approvalStatus,
+            reasons: coreSummary.reasons.map((reason) => ({
+              ruleId: reason.ruleId,
+              approvalStatus: reason.approvalStatus,
+              message: reason.message,
+            })),
+          } satisfies Json,
+        });
+      }
     }
-
-    return enrichEstimateApprovalSummary({
-      context: input.context,
-      version: input.version,
-      project: input.project,
-      items,
-      submissionReadiness,
-      reviewReads,
-      summary: coreSummary,
-    });
   }
 
-  const { error: updateError } = await serviceRoleClient
-    .from("estimate_versions")
-    .update({
-      approval_status: coreSummary.approvalStatus,
-      approval_summary: nextSummary,
-      approval_evaluated_at: coreSummary.evaluatedAt,
-    })
-    .eq("tenant_id", input.context.tenantId)
-    .eq("id", input.version.id);
-
-  if (updateError) {
-    throw mapSupabaseError(
-      updateError,
-      "Impossible de projeter le résumé d'approbation."
-    );
-  }
-
-  await logEstimateApprovalEvent({
-    versionId: input.version.id,
-    eventType: "approval_rules_evaluated",
-    actorUserId: input.actorUserId ?? input.context.userId,
-    occurredAt: coreSummary.evaluatedAt,
-    metadata: toApprovalSummaryAuditMetadata({
-      summary: coreSummary,
-      trigger: input.trigger,
-      previousStatus,
-    }),
-  });
-
-  if (previousStatus !== coreSummary.approvalStatus) {
-    await logEstimateApprovalEvent({
-      versionId: input.version.id,
-      eventType: "approval_status_changed",
-      actorUserId: input.actorUserId ?? input.context.userId,
-      occurredAt: coreSummary.evaluatedAt,
-      metadata: {
-        previousStatus,
-        nextStatus: coreSummary.approvalStatus,
-        reasons: coreSummary.reasons.map((reason) => ({
-          ruleId: reason.ruleId,
-          approvalStatus: reason.approvalStatus,
-          message: reason.message,
-        })),
-      } satisfies Json,
-    });
-  }
-
+  // A stored summary still current keeps its evaluation time.
   return enrichEstimateApprovalSummary({
     context: input.context,
     version: input.version,
@@ -837,7 +813,12 @@ export async function syncEstimateApprovalSummary(input: {
     items,
     submissionReadiness,
     reviewReads,
-    summary: coreSummary,
+    summary: summaryChanged
+      ? coreSummary
+      : {
+          ...coreSummary,
+          evaluatedAt: input.version.approval_evaluated_at ?? coreSummary.evaluatedAt,
+        },
   });
 }
 

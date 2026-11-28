@@ -1,6 +1,7 @@
 import type { ExtendedEstimateRuleType, EstimateRuleScopeType, EstimateRuleAction, EstimateRuleRow, EstimateRuleInsert, EstimateRuleUpdate, AuthenticatedContext } from "@/lib/estimates/approval-types";
 import { readAllRows } from "@/lib/supabase/read-all";
 import { badRequest, forbidden, mapSupabaseError, notFound } from "@/lib/http/api-response";
+import { ESTIMATE_RULE_COLUMNS } from "@/lib/estimates/approval-columns";
 import {
   getAuthenticatedContext,
   isTenantAdmin,
@@ -19,10 +20,7 @@ export async function listEstimateRulesForCurrentTenant() {
 
   const { data, error } = await readAllRows(() => context.supabase
     .from("estimate_rules")
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active",
-      { count: "exact" }
-    )
+    .select(ESTIMATE_RULE_COLUMNS, { count: "exact" })
     .eq("tenant_id", context.tenantId)
     .order("created_at", { ascending: true }));
 
@@ -60,9 +58,7 @@ export async function createEstimateRuleForCurrentTenant(input: {
   const { data, error } = await context.supabase
     .from("estimate_rules")
     .insert(payload)
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active"
-    )
+    .select(ESTIMATE_RULE_COLUMNS)
     .single();
 
   if (error || !data) {
@@ -121,9 +117,7 @@ export async function updateEstimateRuleForCurrentTenant(input: {
     .update(payload)
     .eq("tenant_id", context.tenantId)
     .eq("id", input.id)
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active"
-    )
+    .select(ESTIMATE_RULE_COLUMNS)
     .single();
 
   if (error || !data) {

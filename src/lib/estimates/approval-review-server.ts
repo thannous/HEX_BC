@@ -10,12 +10,11 @@ import {
   getVersionAccessOrThrow,
 } from "@/lib/estimates/server-context";
 import { APPROVAL_VERSION_ACCESS } from "@/lib/estimates/approval-version-access";
+import { ESTIMATE_APPROVAL_COLUMNS, ESTIMATE_REVIEW_CYCLE_COLUMNS } from "@/lib/estimates/approval-columns";
 
 export function normalizeReviewCycle(
   row: EstimateReviewCycleWithProfilesRow
 ): Omit<EstimateApprovalReviewCycle, "comments"> {
-  const assignedReviewerProfile = resolveEmbeddedOne(row.assigned_reviewer_profile);
-
   return {
     id: row.id,
     cycleNumber: row.cycle_number,
@@ -28,14 +27,7 @@ export function normalizeReviewCycle(
     deciderName: resolveEmbeddedOne(row.decided_by_profile)?.full_name ?? null,
     carriedOverFromCycleId: row.carried_over_from_cycle_id,
     submissionMessage: row.submission_message,
-    assignedReviewer: assignedReviewerProfile
-      ? {
-          userId: assignedReviewerProfile.id,
-          fullName:
-            assignedReviewerProfile.full_name?.trim() || "Validateur",
-          workEmail: assignedReviewerProfile.work_email ?? null,
-        }
-      : null,
+    assignedReviewer: normalizeAssignedReviewer(row),
   };
 }
 
@@ -268,24 +260,7 @@ export async function listEstimateReviewCycles(input: {
     .from("estimate_review_cycles")
     .select(
       ([
-        "id",
-        "created_at",
-        "updated_at",
-        "tenant_id",
-        "version_id",
-        "cycle_number",
-        "requested_by",
-        "requested_at",
-        "submission_message",
-        "assigned_reviewer_id",
-        "decided_by",
-        "decision",
-        "decided_at",
-        "carried_over_from_cycle_id",
-        "requested_content_revision",
-        "superseded_at",
-        "superseded_by",
-        "superseded_by_cycle_id",
+        ESTIMATE_REVIEW_CYCLE_COLUMNS,
         "requested_by_profile:requested_by(full_name)",
         "decided_by_profile:decided_by(full_name)",
         "assigned_reviewer_profile:assigned_reviewer_id(id, full_name, work_email)",
@@ -548,48 +523,52 @@ export async function updateEstimateReviewCorrectionItemStatus(input: {
   };
 }
 
-export async function findOpenReviewCycle(input: {
+/** The version's last review cycle, or its last open one (undecided and not superseded). */
+async function findReviewCycle(input: {
   context: AuthenticatedContext;
   versionId: string;
+  openOnly: boolean;
+  errorMessage: string;
 }) {
-  const { data, error } = await input.context.supabase
+  let query = input.context.supabase
     .from("estimate_review_cycles")
-    .select(
-      "id, created_at, updated_at, tenant_id, version_id, cycle_number, requested_by, requested_at, submission_message, assigned_reviewer_id, decided_by, decision, decided_at, carried_over_from_cycle_id, requested_content_revision, superseded_at, superseded_by, superseded_by_cycle_id"
-    )
+    .select(ESTIMATE_REVIEW_CYCLE_COLUMNS)
     .eq("tenant_id", input.context.tenantId)
-    .eq("version_id", input.versionId)
-    .is("decision", null)
-    .is("superseded_at", null)
+    .eq("version_id", input.versionId);
+  if (input.openOnly) {
+    query = query.is("decision", null).is("superseded_at", null);
+  }
+  const { data, error } = await query
     .order("cycle_number", { ascending: false })
     .limit(1);
 
   if (error) {
-    throw mapSupabaseError(error, "Impossible de charger le cycle de revue actif.");
+    throw mapSupabaseError(error, input.errorMessage);
   }
 
   return ((data ?? [])[0] as EstimateReviewCycleRow | undefined) ?? null;
 }
 
-export async function findLatestReviewCycle(input: {
+export function findOpenReviewCycle(input: {
   context: AuthenticatedContext;
   versionId: string;
 }) {
-  const { data, error } = await input.context.supabase
-    .from("estimate_review_cycles")
-    .select(
-      "id, created_at, updated_at, tenant_id, version_id, cycle_number, requested_by, requested_at, submission_message, assigned_reviewer_id, decided_by, decision, decided_at, carried_over_from_cycle_id, requested_content_revision, superseded_at, superseded_by, superseded_by_cycle_id"
-    )
-    .eq("tenant_id", input.context.tenantId)
-    .eq("version_id", input.versionId)
-    .order("cycle_number", { ascending: false })
-    .limit(1);
+  return findReviewCycle({
+    ...input,
+    openOnly: true,
+    errorMessage: "Impossible de charger le cycle de revue actif.",
+  });
+}
 
-  if (error) {
-    throw mapSupabaseError(error, "Impossible de charger l'historique de revue.");
-  }
-
-  return ((data ?? [])[0] as EstimateReviewCycleRow | undefined) ?? null;
+export function findLatestReviewCycle(input: {
+  context: AuthenticatedContext;
+  versionId: string;
+}) {
+  return findReviewCycle({
+    ...input,
+    openOnly: false,
+    errorMessage: "Impossible de charger l'historique de revue.",
+  });
 }
 
 export async function listPendingApprovalsForVersion(input: {
@@ -598,10 +577,7 @@ export async function listPendingApprovalsForVersion(input: {
 }) {
   const { data, error } = await readAllRows(() => input.context.supabase
     .from("estimate_approvals")
-    .select(
-      "id, created_at, updated_at, tenant_id, version_id, rule_id, requested_by, approved_by, status, decided_at, approved_content_revision, review_cycle_id, superseded_at",
-      { count: "exact" }
-    )
+    .select(ESTIMATE_APPROVAL_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.context.tenantId)
     .eq("version_id", input.versionId)
     .eq("status", "pending")
@@ -622,11 +598,9 @@ async function listApprovalsForReviewCycle(input: {
   requestedAt: string;
   decidedAt?: string | null;
 }) {
-  const selection =
-    "id, created_at, updated_at, tenant_id, version_id, rule_id, requested_by, approved_by, status, decided_at, approved_content_revision, review_cycle_id, superseded_at";
   const linkedResult = await readAllRows(() => input.context.supabase
     .from("estimate_approvals")
-    .select(selection, { count: "exact" })
+    .select(ESTIMATE_APPROVAL_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.context.tenantId)
     .eq("version_id", input.versionId)
     .eq("review_cycle_id", input.cycleId)
@@ -647,7 +621,7 @@ async function listApprovalsForReviewCycle(input: {
   // temporal window is used only when no governed linked row exists.
   let legacyQuery = input.context.supabase
     .from("estimate_approvals")
-    .select(selection, { count: "exact" })
+    .select(ESTIMATE_APPROVAL_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.context.tenantId)
     .eq("version_id", input.versionId)
     .is("review_cycle_id", null)

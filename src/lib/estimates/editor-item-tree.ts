@@ -1,3 +1,4 @@
+import type { EditorEstimateItem } from "@/lib/estimates/editor-items";
 import type { Database } from "@/types/database";
 
 type EstimateItem = Database["public"]["Tables"]["estimate_items"]["Row"];
@@ -11,6 +12,42 @@ export type ExistingSection = {
   parentId: string | null;
   title: string;
 };
+
+/** The sections of a version with their path of section titles, for the section pickers. */
+export function buildSectionHierarchy(
+  items: EditorEstimateItem[],
+  versionId: string
+): ExistingSection[] {
+  const sections = items.filter(
+    (item) =>
+      item.version_id === versionId && item.item_type === "section"
+  );
+  const sectionById = new Map(
+    sections.map((section) => [section.id, section] as const)
+  );
+
+  return sections.map((section) => {
+    const pathParts: string[] = [];
+    const visitedIds = new Set<string>();
+    let cursor: EditorEstimateItem | undefined = section;
+
+    while (cursor && !visitedIds.has(cursor.id)) {
+      visitedIds.add(cursor.id);
+      pathParts.unshift(cursor.title ?? "Section");
+      cursor = cursor.parent_id
+        ? sectionById.get(cursor.parent_id)
+        : undefined;
+    }
+
+    return {
+      id: section.id,
+      path: pathParts.join(" > "),
+      hierarchyLevel: Math.max(1, pathParts.length),
+      parentId: section.parent_id,
+      title: section.title ?? "Section",
+    };
+  });
+}
 
 export function getParentKey(id: string | null) {
   return id ?? ITEMS_BY_PARENT_ROOT_KEY;

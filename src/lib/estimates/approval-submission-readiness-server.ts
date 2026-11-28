@@ -1,6 +1,6 @@
-import type { Supabase, RulesEngineVersion, RulesEngineProject, RulesEngineItemAccess, EvaluateRulesResult, EstimateApprovalSubmissionSignal } from "@/lib/estimates/approval-types";
+import type { Supabase, RulesEngineVersion, RulesEngineProject, RulesEngineItemAccess, EvaluateRulesResult, EstimateApprovalSubmissionSignal, EstimateRuleViolation, EstimateRuleUnavailableSignal } from "@/lib/estimates/approval-types";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { buildAffaireRegisterHubHref } from "@/lib/affaires/register";
+import { buildAffaireRegisterHubHref, type AffaireRegisterEntryKind, type AffaireRegisterEntrySeverity, type AffaireRegisterEntryStatus } from "@/lib/affaires/register";
 import { buildAffaireRegisterSubmissionSignalMessage, fetchAffaireRegisterGateSummary } from "@/lib/affaires/register-gate-server";
 import type { V3MarginEvidence } from "@/lib/estimates/v3-margin-evidence-server";
 import type { CanonicalFixedDiscountEvidence } from "@/lib/estimates/effective-discount";
@@ -41,6 +41,21 @@ export function buildSubmissionReadinessFromRulesEvaluation(input: {
   blockers: EstimateApprovalSubmissionSignal[];
   alerts: EstimateApprovalSubmissionSignal[];
 } {
+  const fromViolation = (violation: EstimateRuleViolation) =>
+    toSubmissionReadinessSignal({
+      id: `rule:${violation.rule_id}`,
+      label: resolveApprovalSummaryLabel(violation.rule_type),
+      message: violation.message,
+      category: "approvals",
+    });
+  const fromUnavailableSignal = (signal: EstimateRuleUnavailableSignal) =>
+    toSubmissionReadinessSignal({
+      id: `signal:${signal.rule_id}`,
+      label: resolveApprovalSummaryLabel(signal.rule_type),
+      message: signal.message,
+      category: "approvals",
+    });
+
   const blockers = [
     ...input.rulesEvaluation.blockingViolations
       .filter(
@@ -50,45 +65,17 @@ export function buildSubmissionReadinessFromRulesEvaluation(input: {
             ruleType: violation.rule_type,
           })
       )
-      .map((violation) =>
-        toSubmissionReadinessSignal({
-          id: `rule:${violation.rule_id}`,
-          label: resolveApprovalSummaryLabel(violation.rule_type),
-          message: violation.message,
-          category: "approvals",
-        })
-      ),
+      .map((violation) => fromViolation(violation)),
     ...input.rulesEvaluation.unavailableSignals
       .filter((signal) => signal.action === "block")
-      .map((signal) =>
-        toSubmissionReadinessSignal({
-          id: `signal:${signal.rule_id}`,
-          label: resolveApprovalSummaryLabel(signal.rule_type),
-          message: signal.message,
-          category: "approvals",
-        })
-      ),
+      .map((signal) => fromUnavailableSignal(signal)),
   ];
 
   const alerts = [
-    ...input.rulesEvaluation.warningViolations.map((violation) =>
-      toSubmissionReadinessSignal({
-        id: `rule:${violation.rule_id}`,
-        label: resolveApprovalSummaryLabel(violation.rule_type),
-        message: violation.message,
-        category: "approvals",
-      })
-    ),
+    ...input.rulesEvaluation.warningViolations.map((violation) => fromViolation(violation)),
     ...input.rulesEvaluation.unavailableSignals
       .filter((signal) => signal.action !== "block")
-      .map((signal) =>
-        toSubmissionReadinessSignal({
-          id: `signal:${signal.rule_id}`,
-          label: resolveApprovalSummaryLabel(signal.rule_type),
-          message: signal.message,
-          category: "approvals",
-        })
-      ),
+      .map((signal) => fromUnavailableSignal(signal)),
   ];
 
   return {
@@ -128,6 +115,100 @@ async function enrichSubmissionReadinessWithAffaireRegister(input: {
   });
 }
 
+/**
+ * The register signals of a submission, in the order they are added: the two critical lists block
+ * it, the open and client lists only alert.
+ */
+const REGISTER_SUBMISSION_SIGNALS: ReadonlyArray<{
+  list: "blockers" | "alerts";
+  source: "criticalOpenEntries" | "nonCriticalOpenEntries" | "clarifyWithClientEntries";
+  kind: AffaireRegisterEntryKind;
+  status: AffaireRegisterEntryStatus;
+  severity?: AffaireRegisterEntrySeverity;
+  id: string;
+  label: string;
+  messageLabel: string;
+  intro: string;
+  category: EstimateReadinessCategory;
+  actionLabel: string;
+}> = [
+  {
+    list: "blockers",
+    source: "criticalOpenEntries",
+    kind: "missing_piece",
+    status: "open",
+    severity: "critical",
+    id: "register:critical_missing_pieces",
+    label: "Documents",
+    messageLabel: "Documents critiques manquants",
+    intro: "Des pièces critiques restent manquantes avant soumission.",
+    category: "documents",
+    actionLabel: "Ouvrir les documents manquants",
+  },
+  {
+    list: "blockers",
+    source: "criticalOpenEntries",
+    kind: "assumption",
+    status: "open",
+    severity: "critical",
+    id: "register:critical_open_questions",
+    label: "Registre affaire",
+    messageLabel: "Questions critiques ouvertes",
+    intro: "Des questions critiques restent ouvertes.",
+    category: "register",
+    actionLabel: "Ouvrir le registre",
+  },
+  {
+    list: "alerts",
+    source: "nonCriticalOpenEntries",
+    kind: "missing_piece",
+    status: "open",
+    id: "register:missing_pieces_pending",
+    label: "Documents",
+    messageLabel: "Documents manquants",
+    intro: "Des pièces manquantes restent ouvertes avant validation.",
+    category: "documents",
+    actionLabel: "Ouvrir les documents manquants",
+  },
+  {
+    list: "alerts",
+    source: "nonCriticalOpenEntries",
+    kind: "assumption",
+    status: "open",
+    id: "register:open_questions_pending",
+    label: "Registre affaire",
+    messageLabel: "Questions ouvertes",
+    intro: "Des hypothèses restent ouvertes avant validation.",
+    category: "register",
+    actionLabel: "Ouvrir le registre",
+  },
+  {
+    list: "alerts",
+    source: "clarifyWithClientEntries",
+    kind: "missing_piece",
+    status: "clarify_with_client",
+    id: "register:client_missing_documents_required",
+    label: "Documents",
+    messageLabel: "Documents attendus du client",
+    intro: "Des pièces restent à demander au client avant envoi externe.",
+    category: "documents",
+    actionLabel: "Ouvrir les documents attendus",
+  },
+  {
+    list: "alerts",
+    source: "clarifyWithClientEntries",
+    kind: "assumption",
+    status: "clarify_with_client",
+    id: "register:client_clarification_required",
+    label: "Registre affaire",
+    messageLabel: "Clarifications client",
+    intro:
+      "Des points restent à clarifier avec le client avant envoi externe.",
+    category: "register",
+    actionLabel: "Ouvrir le registre",
+  },
+];
+
 export function applySubmissionReadinessRegisterContext(input: {
   projectId: string;
   versionId: string;
@@ -139,159 +220,32 @@ export function applySubmissionReadinessRegisterContext(input: {
   const { registerSummary, versionZeroSummary } = input;
   const blockers = [...input.submissionReadiness.blockers];
   const alerts = [...input.submissionReadiness.alerts];
-  const criticalMissingPieceEntries = registerSummary.criticalOpenEntries.filter(
-    (entry) => entry.kind === "missing_piece"
-  );
-  const criticalAssumptionEntries = registerSummary.criticalOpenEntries.filter(
-    (entry) => entry.kind === "assumption"
-  );
-  const openMissingPieceEntries = registerSummary.nonCriticalOpenEntries.filter(
-    (entry) => entry.kind === "missing_piece"
-  );
-  const openAssumptionEntries = registerSummary.nonCriticalOpenEntries.filter(
-    (entry) => entry.kind === "assumption"
-  );
-  const clarifyMissingPieceEntries = registerSummary.clarifyWithClientEntries.filter(
-    (entry) => entry.kind === "missing_piece"
-  );
-  const clarifyAssumptionEntries = registerSummary.clarifyWithClientEntries.filter(
-    (entry) => entry.kind === "assumption"
-  );
-
-  if (criticalMissingPieceEntries.length > 0) {
-    blockers.push(
+  REGISTER_SUBMISSION_SIGNALS.forEach((signal) => {
+    const entries = registerSummary[signal.source].filter(
+      (entry) => entry.kind === signal.kind
+    );
+    if (entries.length === 0) return;
+    (signal.list === "blockers" ? blockers : alerts).push(
       toSubmissionReadinessSignal({
-        id: "register:critical_missing_pieces",
-        label: "Documents",
+        id: signal.id,
+        label: signal.label,
         message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: criticalMissingPieceEntries,
-          label: "Documents critiques manquants",
-          intro: "Des pièces critiques restent manquantes avant soumission.",
+          entries,
+          label: signal.messageLabel,
+          intro: signal.intro,
         }),
-        category: "documents",
-        actionLabel: "Ouvrir les documents manquants",
+        category: signal.category,
+        actionLabel: signal.actionLabel,
         actionHref: buildAffaireRegisterHubHref({
           projectId: input.projectId,
-          status: "open",
-          severity: "critical",
-          kind: "missing_piece",
-          focusEntryId: criticalMissingPieceEntries[0]?.id ?? null,
+          status: signal.status,
+          severity: signal.severity,
+          kind: signal.kind,
+          focusEntryId: entries[0]?.id ?? null,
         }),
       })
     );
-  }
-
-  if (criticalAssumptionEntries.length > 0) {
-    blockers.push(
-      toSubmissionReadinessSignal({
-        id: "register:critical_open_questions",
-        label: "Registre affaire",
-        message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: criticalAssumptionEntries,
-          label: "Questions critiques ouvertes",
-          intro: "Des questions critiques restent ouvertes.",
-        }),
-        category: "register",
-        actionLabel: "Ouvrir le registre",
-        actionHref: buildAffaireRegisterHubHref({
-          projectId: input.projectId,
-          status: "open",
-          severity: "critical",
-          kind: "assumption",
-          focusEntryId: criticalAssumptionEntries[0]?.id ?? null,
-        }),
-      })
-    );
-  }
-
-  if (openMissingPieceEntries.length > 0) {
-    alerts.push(
-      toSubmissionReadinessSignal({
-        id: "register:missing_pieces_pending",
-        label: "Documents",
-        message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: openMissingPieceEntries,
-          label: "Documents manquants",
-          intro: "Des pièces manquantes restent ouvertes avant validation.",
-        }),
-        category: "documents",
-        actionLabel: "Ouvrir les documents manquants",
-        actionHref: buildAffaireRegisterHubHref({
-          projectId: input.projectId,
-          status: "open",
-          kind: "missing_piece",
-          focusEntryId: openMissingPieceEntries[0]?.id ?? null,
-        }),
-      })
-    );
-  }
-
-  if (openAssumptionEntries.length > 0) {
-    alerts.push(
-      toSubmissionReadinessSignal({
-        id: "register:open_questions_pending",
-        label: "Registre affaire",
-        message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: openAssumptionEntries,
-          label: "Questions ouvertes",
-          intro: "Des hypothèses restent ouvertes avant validation.",
-        }),
-        category: "register",
-        actionLabel: "Ouvrir le registre",
-        actionHref: buildAffaireRegisterHubHref({
-          projectId: input.projectId,
-          status: "open",
-          kind: "assumption",
-          focusEntryId: openAssumptionEntries[0]?.id ?? null,
-        }),
-      })
-    );
-  }
-
-  if (clarifyMissingPieceEntries.length > 0) {
-    alerts.push(
-      toSubmissionReadinessSignal({
-        id: "register:client_missing_documents_required",
-        label: "Documents",
-        message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: clarifyMissingPieceEntries,
-          label: "Documents attendus du client",
-          intro: "Des pièces restent à demander au client avant envoi externe.",
-        }),
-        category: "documents",
-        actionLabel: "Ouvrir les documents attendus",
-        actionHref: buildAffaireRegisterHubHref({
-          projectId: input.projectId,
-          status: "clarify_with_client",
-          kind: "missing_piece",
-          focusEntryId: clarifyMissingPieceEntries[0]?.id ?? null,
-        }),
-      })
-    );
-  }
-
-  if (clarifyAssumptionEntries.length > 0) {
-    alerts.push(
-      toSubmissionReadinessSignal({
-        id: "register:client_clarification_required",
-        label: "Registre affaire",
-        message: buildAffaireRegisterSubmissionSignalMessage({
-          entries: clarifyAssumptionEntries,
-          label: "Clarifications client",
-          intro:
-            "Des points restent à clarifier avec le client avant envoi externe.",
-        }),
-        category: "register",
-        actionLabel: "Ouvrir le registre",
-        actionHref: buildAffaireRegisterHubHref({
-          projectId: input.projectId,
-          status: "clarify_with_client",
-          kind: "assumption",
-          focusEntryId: clarifyAssumptionEntries[0]?.id ?? null,
-        }),
-      })
-    );
-  }
+  });
 
   if (versionZeroSummary?.activeDraft) {
     blockers.push(

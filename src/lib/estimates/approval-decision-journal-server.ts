@@ -3,6 +3,7 @@ import { normalizeThresholdValue } from "@/lib/estimates/rule-evaluation";
 import { normalizeEstimateApprovalDecision, resolveApprovalDecisionOutcome, type EstimateApprovalDecisionComment, type EstimateApprovalDecisionEvent, type EstimateApprovalDecisionFilter, type EstimateApprovalDecisionJournal, type EstimateApprovalDecisionRule, type EstimateApprovalDecisionScope } from "@/lib/estimates/approval-decision-journal";
 import { mapSupabaseError } from "@/lib/http/api-response";
 import { resolveEmbeddedOne } from "@/lib/supabase/embedded";
+import { startConcurrentRead } from "@/lib/supabase/concurrent-read";
 import {
   getAuthenticatedContext,
   getVersionAccessOrThrow,
@@ -366,19 +367,26 @@ export async function listEstimateApprovalDecisionJournal(input: {
     ? eventsQuery.eq("metadata->>decision", input.decision)
     : eventsQuery;
 
-  const { data, error } = await filteredEventsQuery.order("created_at", { ascending: false });
-
-  if (error) {
-    throw mapSupabaseError(error, "Impossible de charger le journal de décision.");
-  }
-
+  // The events and their authors are independent reads: they start together, and a refusal of
+  // the events is still reported before one of the authors.
+  const eventsResult = startConcurrentRead(
+    filteredEventsQuery.order("created_at", { ascending: false })
+  );
   const authorQuery = context.supabase
     .from("estimate_version_events")
     .select("created_by, profiles:created_by(full_name)")
     .eq("tenant_id", context.tenantId)
     .eq("estimate_version_id", input.versionId)
     .eq("event_type", "approval_decided");
-  const { data: authorRows, error: authorError } = await authorQuery;
+  const authorsResult = startConcurrentRead(authorQuery);
+
+  const { data, error } = await eventsResult;
+
+  if (error) {
+    throw mapSupabaseError(error, "Impossible de charger le journal de décision.");
+  }
+
+  const { data: authorRows, error: authorError } = await authorsResult;
 
   if (authorError) {
     throw mapSupabaseError(

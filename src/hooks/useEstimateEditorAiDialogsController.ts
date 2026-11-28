@@ -13,7 +13,7 @@ import type {
   GeneratedOuvrageDialogProps,
   VersionZeroDraftDialogProps,
 } from "@/hooks/estimate-editor-view-props";
-import type { ExistingSection } from "@/lib/estimates/editor-item-tree";
+import { buildSectionHierarchy, type ExistingSection } from "@/lib/estimates/editor-item-tree";
 import type { VersionZeroDraftSummary } from "@/lib/estimates/editor-read-contracts";
 import { isEstimateAiDraftEnabled } from "@/lib/estimates/ai-draft-availability";
 import type {
@@ -116,41 +116,6 @@ function createEmptyAiDialogsState(scopeKey: string): ScopedAiDialogsState {
     versionZeroSummary: null,
     highlightedItemIds: new Set(),
   };
-}
-
-function buildSectionHierarchy(
-  items: EditorEstimateItem[],
-  versionId: string
-): ExistingSection[] {
-  const sections = items.filter(
-    (item) =>
-      item.version_id === versionId && item.item_type === "section"
-  );
-  const sectionById = new Map(
-    sections.map((section) => [section.id, section] as const)
-  );
-
-  return sections.map((section) => {
-    const pathParts: string[] = [];
-    const visitedIds = new Set<string>();
-    let cursor: EditorEstimateItem | undefined = section;
-
-    while (cursor && !visitedIds.has(cursor.id)) {
-      visitedIds.add(cursor.id);
-      pathParts.unshift(cursor.title ?? "Section");
-      cursor = cursor.parent_id
-        ? sectionById.get(cursor.parent_id)
-        : undefined;
-    }
-
-    return {
-      id: section.id,
-      path: pathParts.join(" > "),
-      hierarchyLevel: Math.max(1, pathParts.length),
-      parentId: section.parent_id,
-      title: section.title ?? "Section",
-    };
-  });
 }
 
 function canAutoOpenVersionZero(summary: VersionZeroDraftSummary | null) {

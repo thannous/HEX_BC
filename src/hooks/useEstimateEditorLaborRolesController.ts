@@ -69,24 +69,39 @@ export function useEstimateEditorLaborRolesController({
   enqueueBufferedItemUpdate: EstimateEditorSyncController["actions"]["enqueueItemUpdate"];
   setActionError: Dispatch<SetStateAction<string | null>>;
 }) {
+  /** The refusals both role edits meet first, in this order; true when the edit may go on. */
+  const guardRoleEdit = useCallback(() => {
+    if (!editorDocument.isCurrent(documentScope)) return false;
+    setActionError(null);
+    if (settingsSaveGuardRef.current.isBlocked) {
+      setActionError(settingsSaveGuardRef.current.message);
+      return false;
+    }
+    if (isReadOnly) {
+      setActionError(readOnlyActionErrorMessage);
+      return false;
+    }
+    if (isConflictLocked) {
+      setActionError(
+        conflictState?.message ?? ESTIMATE_VERSION_CONFLICT_MESSAGE
+      );
+      return false;
+    }
+    return true;
+  }, [
+    conflictState?.message,
+    editorDocument,
+    documentScope,
+    isConflictLocked,
+    isReadOnly,
+    readOnlyActionErrorMessage,
+    setActionError,
+    settingsSaveGuardRef,
+  ]);
+
   const handleCreateRole = useCallback(
     async (payload: { name: string; hourly_rate_cents: number }) => {
-      if (!editorDocument.isCurrent(documentScope)) return;
-      setActionError(null);
-      if (settingsSaveGuardRef.current.isBlocked) {
-        setActionError(settingsSaveGuardRef.current.message);
-        return;
-      }
-      if (isReadOnly) {
-        setActionError(readOnlyActionErrorMessage);
-        return;
-      }
-      if (isConflictLocked) {
-        setActionError(
-          conflictState?.message ?? ESTIMATE_VERSION_CONFLICT_MESSAGE
-        );
-        return;
-      }
+      if (!guardRoleEdit()) return;
       if (!profile?.id) {
         setActionError("Impossible de charger votre profil.");
         return;
@@ -122,39 +137,20 @@ export function useEstimateEditorLaborRolesController({
       );
     },
     [
-      conflictState?.message,
       editorDocument,
       documentScope,
-      isConflictLocked,
-      isReadOnly,
+      guardRoleEdit,
       laborRoles,
       setLaborRoles,
       profile,
-      readOnlyActionErrorMessage,
       setActionError,
-      settingsSaveGuardRef,
       version?.id,
     ]
   );
 
   const handleUpdateRole = useCallback(
     async (id: string, updates: Partial<LaborRole>) => {
-      if (!editorDocument.isCurrent(documentScope)) return;
-      setActionError(null);
-      if (settingsSaveGuardRef.current.isBlocked) {
-        setActionError(settingsSaveGuardRef.current.message);
-        return;
-      }
-      if (isReadOnly) {
-        setActionError(readOnlyActionErrorMessage);
-        return;
-      }
-      if (isConflictLocked) {
-        setActionError(
-          conflictState?.message ?? ESTIMATE_VERSION_CONFLICT_MESSAGE
-        );
-        return;
-      }
+      if (!guardRoleEdit()) return;
       if (!version?.id) {
         setActionError("Version introuvable.");
         return;
@@ -174,7 +170,7 @@ export function useEstimateEditorLaborRolesController({
       );
 
       // v3 (revue, F26-23) : un lot v3 recalcule et stocke lignes et totaux au nouveau taux (l'aperçu le suit déjà).
-      if (isV3 && updates.hourly_rate_cents !== undefined && !isReadOnly && !isConflictLocked) {
+      if (isV3 && updates.hourly_rate_cents !== undefined) {
         const snapshot = getVersionSnapshot() ?? version;
         await recomputeEstimateV3AfterLaborRate(snapshot.id, snapshot.updated_at, itemsRef.current, id)?.catch((error: unknown) => {
           if (editorDocument.isCurrent(documentScope)) setActionError(`Le taux horaire est enregistré, mais les montants du devis n'ont pas été recalculés : ${error instanceof Error ? error.message : "erreur inconnue"}`);
@@ -213,15 +209,17 @@ export function useEstimateEditorLaborRolesController({
         };
       });
 
+      // The first repriced line of an id replaces the editor's lines of that id.
+      const updatedLineById = new Map<string, (typeof updatedLines)[number]>();
+      updatedLines.forEach((line) => {
+        if (!updatedLineById.has(line.id)) updatedLineById.set(line.id, line);
+      });
       setItems((prev) =>
         prev.map((item) => {
           if (item.item_type !== "line") return item;
-          const updated = updatedLines.find((line) => line.id === item.id);
-          return updated ?? item;
+          return updatedLineById.get(item.id) ?? item;
         })
       );
-
-      if (isReadOnly || isConflictLocked) return;
 
       updatedLines.forEach((item) => {
         enqueueBufferedItemUpdate(item.id, buildEstimateItemUpdatePayload(item));
@@ -232,17 +230,13 @@ export function useEstimateEditorLaborRolesController({
       itemsRef,
       setItems,
       setLaborRoles,
-      conflictState?.message,
       editorDocument,
       documentScope,
       getVersionSnapshot,
-      isConflictLocked,
-      isReadOnly,
+      guardRoleEdit,
       isV3,
-      readOnlyActionErrorMessage,
       setActionError,
       settings,
-      settingsSaveGuardRef,
       version,
       computeLineValuesWithLaborContext,
     ]
