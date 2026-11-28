@@ -46,6 +46,7 @@ import {
   generateEstimateStructureDraftSchema,
 } from "./schemas";
 import { assertCanWriteEstimateWorkflows } from "./write-access";
+import { getConfidenceLabel, pickStringArray, toJson } from "@/lib/estimates/draft-ai-shared";
 import { keepTakeoffProvision } from "@/lib/estimates/takeoff-provision";
 import { toNonEmptyString } from "@/lib/value-guards";
 import { normalizeSectionTitleKey } from "@/lib/estimates/estimate-structure-draft";
@@ -386,27 +387,6 @@ async function fetchEstimateVersionToken(input: {
 function clampConfidence(value: number) {
   if (!Number.isFinite(value)) return 0.35;
   return Math.max(0, Math.min(1, Number(value)));
-}
-
-function getConfidenceLabel(
-  confidence: number
-): EstimateStructureDraftNodePayload["confidence_label"] {
-  if (confidence >= 0.75) return "elevee";
-  if (confidence >= 0.55) return "moyenne";
-  return "faible";
-}
-
-function toJson(value: JsonRecord | unknown[]): NonNullable<Json>;
-function toJson(value: unknown): Json;
-function toJson(value: unknown): Json {
-  return value as Json;
-}
-
-function pickStringArray(value: unknown) {
-  if (!Array.isArray(value)) return [] as string[];
-  return value
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter((entry) => entry.length > 0);
 }
 
 function pickAffaireBriefTextArray(value: unknown, limit: number) {

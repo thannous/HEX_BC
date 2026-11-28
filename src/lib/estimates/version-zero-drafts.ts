@@ -42,6 +42,7 @@ import type {
   VersionZeroLotStatus,
 } from "./schemas";
 import { assertCanWriteEstimateWorkflows } from "./write-access";
+import { getConfidenceLabel, pickStringArray, toJson } from "@/lib/estimates/draft-ai-shared";
 import type { VersionZeroDraftSummary } from "@/lib/estimates/editor-read-contracts";
 import type {
   VersionZeroReview,
@@ -257,14 +258,6 @@ const VersionZeroGeminiSchema = z.object({
     .default([]),
 });
 
-function pickStringArray(value: unknown, limit = 12) {
-  if (!Array.isArray(value)) return [] as string[];
-  return value
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter((entry) => entry.length > 0)
-    .slice(0, limit);
-}
-
 function uniqueStrings(values: Array<string | null | undefined>) {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -286,23 +279,11 @@ function clampConfidence(value: number | null | undefined) {
   return Math.max(0, Math.min(1, Number(value)));
 }
 
-function getConfidenceLabel(value: number): "elevee" | "moyenne" | "faible" {
-  if (value >= 0.75) return "elevee";
-  if (value >= 0.55) return "moyenne";
-  return "faible";
-}
-
 function toJsonRecord(value: unknown): JsonRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
   }
   return value as JsonRecord;
-}
-
-function toJson(value: JsonRecord | unknown[]): NonNullable<Json>;
-function toJson(value: unknown): Json;
-function toJson(value: unknown): Json {
-  return value as Json;
 }
 
 function readStringArrayFromJson(value: Json) {
