@@ -42,13 +42,16 @@ import type {
   VersionZeroLotStatus,
 } from "./schemas";
 import { assertCanWriteEstimateWorkflows } from "./write-access";
+import type { VersionZeroDraftSummary } from "@/lib/estimates/editor-read-contracts";
+import type {
+  VersionZeroReview,
+  VersionZeroReviewLine,
+  VersionZeroReviewLot,
+} from "@/lib/estimates/version-zero-draft-contracts";
 import { toNonEmptyString } from "@/lib/value-guards";
 
 type Supabase = SupabaseClient<Database>;
 type JsonRecord = Record<string, unknown>;
-type VersionZeroDraftCounts = NonNullable<
-  VersionZeroDraftSummary["activeDraft"]
->["counts"];
 type TenantRole = Database["public"]["Enums"]["tenant_role"];
 type EstimateVersionRow = Database["public"]["Tables"]["estimate_versions"]["Row"];
 type EstimateVersionZeroDraftRow =
@@ -130,110 +133,16 @@ type EstimateItemRow = Database["public"]["Tables"]["estimate_items"]["Row"] & {
   source_extracted_at?: string | null;
 };
 
-type VersionZeroDraftState = "active" | "terminal";
-
 export type VersionZeroReviewEvidence = {
   type: "fact" | "hypothesis" | "inference" | "risk";
   text: string;
 };
 
-export type VersionZeroReviewLine = {
-  id: string;
-  lotId: string;
-  order: number;
-  reviewStatus: VersionZeroLineReviewStatus;
-  generationOrigin: VersionZeroLineOrigin | null;
-  confidence: number;
-  confidenceLabel: "elevee" | "moyenne" | "faible";
-  proposed: {
-    title: string;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  edited: {
-    title: string | null;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  effective: {
-    title: string;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  provenance: string[];
-  facts: string[];
-  hypotheses: string[];
-  inferences: string[];
-  missingSignals: string[];
-  riskSignals: string[];
-  materializedEstimateItemId: string | null;
-};
-
-export type VersionZeroReviewLot = {
-  id: string;
-  key: string;
-  label: string;
-  order: number;
-  status: VersionZeroLotStatus;
-  confidence: number | null;
-  provenance: string[];
-  facts: string[];
-  hypotheses: string[];
-  inferences: string[];
-  missingSignals: string[];
-  riskSignals: string[];
-  lines: VersionZeroReviewLine[];
-};
-
-export type VersionZeroDraftSummary = {
-  versionId: string;
-  projectId: string;
-  hasConfirmedBrief: boolean;
-  confirmedBriefId: string | null;
-  isVersionEmpty: boolean;
-  canGenerate: boolean;
-  availableLots: string[];
-  activeDraft: {
-    id: string;
-    status: VersionZeroDraftStatus;
-    createdAt: string;
-    materializedAt: string | null;
-    selectedLots: string[];
-    counts: {
-      lots: number;
-      lines: number;
-      pending: number;
-      accepted: number;
-      edited: number;
-      rejected: number;
-      missingLots: number;
-      partialLots: number;
-      lowConfidenceLines: number;
-    };
-    summaryText: string | null;
-    state: VersionZeroDraftState;
-  } | null;
-};
-
-export type VersionZeroReview = {
-  draft: {
-    id: string;
-    versionId: string;
-    projectId: string;
-    briefId: string | null;
-    status: VersionZeroDraftStatus;
-    createdAt: string;
-    updatedAt: string;
-    materializedAt: string | null;
-    selectedLots: string[];
-    summaryText: string | null;
-    generationMetadata: JsonRecord;
-    counts: VersionZeroDraftCounts;
-  };
-  lots: VersionZeroReviewLot[];
+export type {
+  VersionZeroDraftSummary,
+  VersionZeroReview,
+  VersionZeroReviewLine,
+  VersionZeroReviewLot,
 };
 
 type InternalVersionZeroLine = {

@@ -1,94 +1,16 @@
 import { getRootPayload } from "@/lib/estimates/client-json";
 import { requestJson } from "@/lib/estimates/client-requests";
 import type { VersionZeroDraftSummary } from "@/lib/estimates/editor-read-contracts";
-import type { EstimateDraftAiRequest } from "@/lib/estimates/schemas";
-import type { VersionZeroLineOrigin } from "@/lib/estimates/version-zero-utils";
+import type { EstimateDraftAiRequest, VersionZeroDraftStatus, VersionZeroLineReviewStatus } from "@/lib/estimates/schemas";
+import type { VersionZeroReview, VersionZeroReviewLine, VersionZeroReviewLot } from "@/lib/estimates/version-zero-draft-contracts";
 import { isRecord } from "@/lib/value-guards";
 
-type VersionZeroDraftCounts = NonNullable<
-  VersionZeroDraftSummary["activeDraft"]
->["counts"];
-
-export type VersionZeroLineReviewStatus =
-  | "pending"
-  | "accepted"
-  | "edited"
-  | "rejected";
-
-export type VersionZeroDraftStatus =
-  | "ia_a_revoir"
-  | "ready_for_version"
-  | "materialized"
-  | "discarded"
-  | "superseded";
-
-export type VersionZeroReviewLine = {
-  id: string;
-  lotId: string;
-  order: number;
-  reviewStatus: VersionZeroLineReviewStatus;
-  generationOrigin: VersionZeroLineOrigin | null;
-  confidence: number;
-  confidenceLabel: "elevee" | "moyenne" | "faible";
-  proposed: {
-    title: string;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  edited: {
-    title: string | null;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  effective: {
-    title: string;
-    description: string | null;
-    quantity: number | null;
-    unit: string | null;
-  };
-  provenance: string[];
-  facts: string[];
-  hypotheses: string[];
-  inferences: string[];
-  missingSignals: string[];
-  riskSignals: string[];
-  materializedEstimateItemId: string | null;
-};
-
-export type VersionZeroReviewLot = {
-  id: string;
-  key: string;
-  label: string;
-  order: number;
-  status: "generated" | "partial" | "missing";
-  confidence: number | null;
-  provenance: string[];
-  facts: string[];
-  hypotheses: string[];
-  inferences: string[];
-  missingSignals: string[];
-  riskSignals: string[];
-  lines: VersionZeroReviewLine[];
-};
-
-export type VersionZeroReview = {
-  draft: {
-    id: string;
-    versionId: string;
-    projectId: string;
-    briefId: string | null;
-    status: VersionZeroDraftStatus;
-    createdAt: string;
-    updatedAt: string;
-    materializedAt: string | null;
-    selectedLots: string[];
-    summaryText: string | null;
-    generationMetadata: Record<string, unknown>;
-    counts: VersionZeroDraftCounts;
-  };
-  lots: VersionZeroReviewLot[];
+export type {
+  VersionZeroDraftStatus,
+  VersionZeroLineReviewStatus,
+  VersionZeroReview,
+  VersionZeroReviewLine,
+  VersionZeroReviewLot,
 };
 
 function parseVersionZeroDraftSummary(payload: unknown): VersionZeroDraftSummary {
