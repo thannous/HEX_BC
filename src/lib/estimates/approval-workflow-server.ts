@@ -16,6 +16,7 @@ import {
 } from "@/lib/estimates/server-context";
 import { listAvailableEstimateApprovalReviewers, findLatestReviewCycle, listEstimateReviewCorrectionItems, listRuleIdsForReviewCycle, findOpenReviewCycle, listPendingApprovalsForVersion, loadApprovalCommentTargetContext, buildEstimateReviewCommentTargets, resolveApprovalStatusFromReviewDecision } from "@/lib/estimates/approval-review-server";
 import { APPROVAL_VERSION_ACCESS } from "@/lib/estimates/approval-version-access";
+import { ESTIMATE_APPROVAL_COLUMNS, ESTIMATE_RULE_COLUMNS } from "@/lib/estimates/approval-columns";
 import { loadApprovalSummaryItems, evaluateApprovalSummary, syncEstimateApprovalSummary, toRulesEngineInput } from "@/lib/estimates/approval-summary-server";
 import { resolveApprovalSummaryLabel } from "@/lib/estimates/rule-evaluation";
 import { evaluateSubmissionReadiness } from "@/lib/estimates/approval-submission-readiness-server";
@@ -127,6 +128,17 @@ function normalizeDecisionComments(input: {
   return normalized;
 }
 
+/** A decision on a review whose estimate changed since its submission: the review must start again. */
+function throwIfReviewSnapshotStale(error: { message: string }) {
+  if (error.message.includes("ESTIMATE_REVIEW_SNAPSHOT_STALE")) {
+    throw conflict(
+      "Le devis a été modifié depuis sa soumission. Une nouvelle revue est requise.",
+      undefined,
+      "ESTIMATE_REVIEW_SNAPSHOT_STALE"
+    );
+  }
+}
+
 async function decideReviewCycleAtomically(input: {
   context: AuthenticatedContext;
   cycleId: string;
@@ -148,13 +160,7 @@ async function decideReviewCycleAtomically(input: {
   );
 
   if (error) {
-    if (error.message.includes("ESTIMATE_REVIEW_SNAPSHOT_STALE")) {
-      throw conflict(
-        "Le devis a été modifié depuis sa soumission. Une nouvelle revue est requise.",
-        undefined,
-        "ESTIMATE_REVIEW_SNAPSHOT_STALE"
-      );
-    }
+    throwIfReviewSnapshotStale(error);
 
     if (error.message.includes("ESTIMATE_APPROVALS_PENDING_NOT_FOUND")) {
       throw badRequest("Aucune approbation en attente n'est disponible.");
@@ -194,13 +200,7 @@ async function decideApprovalAtomically(input: {
   );
 
   if (error) {
-    if (error.message.includes("ESTIMATE_REVIEW_SNAPSHOT_STALE")) {
-      throw conflict(
-        "Le devis a été modifié depuis sa soumission. Une nouvelle revue est requise.",
-        undefined,
-        "ESTIMATE_REVIEW_SNAPSHOT_STALE"
-      );
-    }
+    throwIfReviewSnapshotStale(error);
 
     if (
       error.message.includes("ESTIMATE_APPROVAL_PENDING_NOT_FOUND") ||
@@ -229,9 +229,7 @@ async function findRuleForTenant(input: {
 }) {
   const { data, error } = await input.context.supabase
     .from("estimate_rules")
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active"
-    )
+    .select(ESTIMATE_RULE_COLUMNS)
     .eq("tenant_id", input.context.tenantId)
     .eq("id", input.ruleId)
     .single();
@@ -253,10 +251,7 @@ async function findRulesForTenant(input: {
 
   const { data, error } = await readAllRowsInChunks(input.ruleIds, (pageIds) => input.context.supabase
     .from("estimate_rules")
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active",
-      { count: "exact" }
-    )
+    .select(ESTIMATE_RULE_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.context.tenantId)
     .in("id", pageIds)
     .order("created_at", { ascending: true }), { order: [{ column: "created_at", ascending: true }] });
@@ -276,9 +271,7 @@ async function findLatestApprovalForRule(input: {
 }) {
   let query = input.context.supabase
     .from("estimate_approvals")
-    .select(
-      "id, created_at, updated_at, tenant_id, version_id, rule_id, requested_by, approved_by, status, decided_at, approved_content_revision, review_cycle_id, superseded_at"
-    )
+    .select(ESTIMATE_APPROVAL_COLUMNS)
     .eq("tenant_id", input.context.tenantId)
     .eq("version_id", input.versionId)
     .eq("rule_id", input.ruleId)
@@ -801,9 +794,7 @@ async function findPendingApprovalToDecide(input: {
   if (input.approvalId) {
     const { data, error } = await context.supabase
       .from("estimate_approvals")
-      .select(
-        "id, created_at, updated_at, tenant_id, version_id, rule_id, requested_by, approved_by, status, decided_at, approved_content_revision, review_cycle_id, superseded_at"
-      )
+      .select(ESTIMATE_APPROVAL_COLUMNS)
       .eq("tenant_id", context.tenantId)
       .eq("version_id", input.versionId)
       .eq("id", input.approvalId)

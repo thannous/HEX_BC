@@ -625,24 +625,32 @@ function toApprovalSummaryAuditMetadata(input: {
   } satisfies Json;
 }
 
+/**
+ * The service-role client that projects the approval summary and logs its events. Without it,
+ * production refuses; elsewhere the caller skips its writes.
+ */
+function requireApprovalProjectionClient() {
+  const client = createOptionalServiceRoleClient();
+  if (!client && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+
+  return client;
+}
+
 async function logEstimateApprovalEvent(input: {
   versionId: string;
   eventType:
     | "approval_rules_evaluated"
-    | "approval_status_changed"
-    | "approval_decided";
+    | "approval_status_changed";
   actorUserId: string | null;
   metadata?: Json;
   occurredAt?: string;
 }) {
-  const rpcClient = createOptionalServiceRoleClient();
+  const rpcClient = requireApprovalProjectionClient();
   if (!rpcClient) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
-      );
-    }
-
     return;
   }
 
@@ -681,7 +689,6 @@ export async function syncEstimateApprovalSummary(input: {
   version: VersionAccessRow;
   project: EmbeddedApprovalProjectAccess;
   trigger: ApprovalAuditTrigger;
-  actorUserId?: string | null;
 }): Promise<EstimateApprovalSummary> {
   // Lot 2, sous-lot 2.5 : une v3 a sa preuve de marque nette (D5) ; le moteur reste exigé en clair.
   requireEstimateEngineVersion(input.version);
@@ -747,14 +754,8 @@ export async function syncEstimateApprovalSummary(input: {
   // calcule pour l'affichage, sans l'écriture vouée au refus qui vidait le panneau d'approbation
   // d'une version jamais évaluée en brouillon (envoi par l'API).
   if (summaryChanged && input.version.status === "draft") {
-    const serviceRoleClient = createOptionalServiceRoleClient();
-    if (!serviceRoleClient) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(
-          "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY."
-        );
-      }
-    } else {
+    const serviceRoleClient = requireApprovalProjectionClient();
+    if (serviceRoleClient) {
       const { error: updateError } = await serviceRoleClient
         .from("estimate_versions")
         .update({
@@ -775,7 +776,7 @@ export async function syncEstimateApprovalSummary(input: {
       await logEstimateApprovalEvent({
         versionId: input.version.id,
         eventType: "approval_rules_evaluated",
-        actorUserId: input.actorUserId ?? input.context.userId,
+        actorUserId: input.context.userId,
         occurredAt: coreSummary.evaluatedAt,
         metadata: toApprovalSummaryAuditMetadata({
           summary: coreSummary,
@@ -788,7 +789,7 @@ export async function syncEstimateApprovalSummary(input: {
         await logEstimateApprovalEvent({
           versionId: input.version.id,
           eventType: "approval_status_changed",
-          actorUserId: input.actorUserId ?? input.context.userId,
+          actorUserId: input.context.userId,
           occurredAt: coreSummary.evaluatedAt,
           metadata: {
             previousStatus,

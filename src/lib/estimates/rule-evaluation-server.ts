@@ -6,6 +6,7 @@ import type { V3MarginEvidence } from "@/lib/estimates/v3-margin-evidence-server
 import type { CanonicalFixedDiscountEvidence } from "@/lib/estimates/effective-discount";
 import type { Database } from "@/types/database";
 import { badRequest, mapSupabaseError } from "@/lib/http/api-response";
+import { ESTIMATE_APPROVAL_COLUMNS, ESTIMATE_RULE_COLUMNS } from "@/lib/estimates/approval-columns";
 
 function requiresTakeoffEvidenceCoverage(ruleType: ExtendedEstimateRuleType) {
   return ruleType === "takeoff_evidence_coverage_min";
@@ -13,13 +14,6 @@ function requiresTakeoffEvidenceCoverage(ruleType: ExtendedEstimateRuleType) {
 
 function requiresDpgfCoverage(ruleType: ExtendedEstimateRuleType) {
   return ruleType === "dpgf_coverage_min";
-}
-
-function requiresUnavailableSignal(ruleType: ExtendedEstimateRuleType) {
-  return (
-    ruleType === "critical_exceptions_max" ||
-    ruleType === "missing_line_evidence_max"
-  );
 }
 
 async function resolveRelatedTakeoffJobIds(input: {
@@ -75,9 +69,6 @@ async function loadRuleSignalContext(input: {
   lineItemIds: string[];
   rules: EstimateRuleRow[];
 }): Promise<RuleSignalContext> {
-  const shouldLoadUnavailableSignals = input.rules.some((rule) =>
-    requiresUnavailableSignal(rule.rule_type)
-  );
   const shouldLoadDpgfCoverage = input.rules.some((rule) =>
     requiresDpgfCoverage(rule.rule_type)
   );
@@ -86,8 +77,8 @@ async function loadRuleSignalContext(input: {
   );
 
   const context: RuleSignalContext = {
-    criticalExceptionsCount: shouldLoadUnavailableSignals ? null : null,
-    missingLineEvidenceCount: shouldLoadUnavailableSignals ? null : null,
+    criticalExceptionsCount: null,
+    missingLineEvidenceCount: null,
     dpgfCoverageBp: null,
     takeoffEvidenceCoverageBp: null,
   };
@@ -197,10 +188,7 @@ export async function loadEstimateRulesWithApprovals(input: {
 
   const { data: rulesData, error: rulesError } = await readAllRows(() => supabase
     .from("estimate_rules")
-    .select(
-      "id, created_at, updated_at, tenant_id, rule_type, scope_type, scope_id, threshold_value, action, is_active",
-      { count: "exact" }
-    )
+    .select(ESTIMATE_RULE_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.tenantId)
     .eq("is_active", true)
     .order("created_at", { ascending: true }));
@@ -224,10 +212,7 @@ export async function loadEstimateRulesWithApprovals(input: {
   const relevantRuleIds = rules.map((rule) => rule.id);
   const { data: approvalsData, error: approvalsError } = await readAllRowsInChunks(relevantRuleIds, (pageIds) => supabase
     .from("estimate_approvals")
-    .select(
-      "id, created_at, updated_at, tenant_id, version_id, rule_id, requested_by, approved_by, status, decided_at, approved_content_revision, review_cycle_id, superseded_at",
-      { count: "exact" }
-    )
+    .select(ESTIMATE_APPROVAL_COLUMNS, { count: "exact" })
     .eq("tenant_id", input.tenantId)
     .eq("version_id", input.versionId)
     .in("rule_id", pageIds)
