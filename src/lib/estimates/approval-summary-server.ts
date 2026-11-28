@@ -226,6 +226,38 @@ export async function evaluateApprovalSummary(input: {
   return summary;
 }
 
+/** The fields of an authorized version and its project that the rules engine reads. */
+export function toRulesEngineInput(
+  version: VersionAccessRow,
+  project: EmbeddedApprovalProjectAccess
+) {
+  return {
+    version: {
+      id: version.id,
+      project_id: version.project_id,
+      total_ht_cents: version.total_ht_cents,
+      margin_bp: version.margin_bp,
+      margin_multiplier: version.margin_multiplier,
+      margin_mode: version.margin_mode,
+      discount_bp: version.discount_bp,
+      discount_amount_cents: version.discount_amount_cents,
+      gross_ht_cents: version.gross_ht_cents,
+      discount_applied_cents: version.discount_applied_cents,
+      tenant_id: version.tenant_id,
+      status: version.status,
+      updated_at: version.updated_at,
+      calc_engine_version: version.calc_engine_version,
+      content_revision: version.content_revision,
+      calc_snapshot_content_revision: version.calc_snapshot_content_revision,
+      calc_snapshot_context: version.calc_snapshot_context,
+    },
+    project: {
+      id: project.id,
+      client_name: project.client_name,
+    },
+  };
+}
+
 function toApprovalSummaryStorage(summary: EstimateApprovalSummaryCore): NonNullable<Json> {
   return {
     requiresApproval: summary.requiresApproval,
@@ -690,30 +722,7 @@ export async function syncEstimateApprovalSummary(input: {
       tenantId: input.context.tenantId,
       fixedDiscountEvidence,
       v3MarginEvidence,
-      version: {
-        id: input.version.id,
-        project_id: input.version.project_id,
-        total_ht_cents: input.version.total_ht_cents,
-        margin_bp: input.version.margin_bp,
-        margin_multiplier: input.version.margin_multiplier,
-        margin_mode: input.version.margin_mode,
-        discount_bp: input.version.discount_bp,
-        discount_amount_cents: input.version.discount_amount_cents,
-        gross_ht_cents: input.version.gross_ht_cents,
-        discount_applied_cents: input.version.discount_applied_cents,
-        tenant_id: input.version.tenant_id,
-        status: input.version.status,
-        updated_at: input.version.updated_at,
-        calc_engine_version: input.version.calc_engine_version,
-        content_revision: input.version.content_revision,
-        calc_snapshot_content_revision:
-          input.version.calc_snapshot_content_revision,
-        calc_snapshot_context: input.version.calc_snapshot_context,
-      },
-      project: {
-        id: input.project.id,
-        client_name: input.project.client_name,
-      },
+      ...toRulesEngineInput(input.version, input.project),
       items,
       evaluatedAt,
       rulesWithApprovals,

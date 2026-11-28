@@ -1,5 +1,6 @@
 import type { EstimateApprovalStatus, EstimateReviewDecision, EstimateRuleRow, EstimateApprovalRow, DecideEstimateReviewCycleResult, AuthenticatedContext, EmbeddedReviewerProfile, EmbeddedApprovalProjectAccess, VersionAccessRow, EstimateApprovalDecisionCommentInput, SubmitEstimateApprovalInput, SubmitEstimateApprovalResult, EstimateApprovalCommentTarget, EstimateApprovalReviewer, EstimateApprovalSummaryCore, EstimateApprovalSummary, NormalizedDecisionComment } from "@/lib/estimates/approval-types";
 import { readAllRowsInChunks } from "@/lib/supabase/read-all";
+import { startConcurrentRead } from "@/lib/supabase/concurrent-read";
 import { sendApprovalReviewRequestNotification } from "@/lib/email/send-approval-review-request";
 import { freezeApprovalV2DraftIfRequired } from "@/lib/estimates/approval-v2-snapshot";
 import { openEstimateReviewCycle } from "@/lib/estimates/review-cycle-submission";
@@ -15,7 +16,7 @@ import {
 } from "@/lib/estimates/server-context";
 import { listAvailableEstimateApprovalReviewers, findLatestReviewCycle, listEstimateReviewCorrectionItems, listRuleIdsForReviewCycle, findOpenReviewCycle, listPendingApprovalsForVersion, loadApprovalCommentTargetContext, buildEstimateReviewCommentTargets, resolveApprovalStatusFromReviewDecision } from "@/lib/estimates/approval-review-server";
 import { APPROVAL_VERSION_ACCESS } from "@/lib/estimates/approval-version-access";
-import { loadApprovalSummaryItems, evaluateApprovalSummary, syncEstimateApprovalSummary } from "@/lib/estimates/approval-summary-server";
+import { loadApprovalSummaryItems, evaluateApprovalSummary, syncEstimateApprovalSummary, toRulesEngineInput } from "@/lib/estimates/approval-summary-server";
 import { resolveApprovalSummaryLabel } from "@/lib/estimates/rule-evaluation";
 import { evaluateSubmissionReadiness } from "@/lib/estimates/approval-submission-readiness-server";
 
@@ -369,19 +370,25 @@ async function loadApprovalEvaluationSources(input: {
   versionId: string;
   access: VersionApprovalAccess;
 }) {
-  const items = await loadApprovalSummaryItems({
+  // Three independent reads of the authorized version start together; a refusal is still reported
+  // in this order (items, then the discount evidence, then the margin evidence).
+  const items = startConcurrentRead(loadApprovalSummaryItems({
     context: input.context,
     versionId: input.versionId,
-  });
-  const fixedDiscountEvidence = await loadCanonicalFixedDiscountEvidence({
+  }));
+  const fixedDiscountEvidence = startConcurrentRead(loadCanonicalFixedDiscountEvidence({
     supabase: input.context.supabase, tenantId: input.context.tenantId,
     projectUserId: input.access.project.user_id, authorizedVersion: input.access.version,
-  });
-  const v3MarginEvidence = await loadV3MarginEvidence({
+  }));
+  const v3MarginEvidence = startConcurrentRead(loadV3MarginEvidence({
     supabase: input.context.supabase, tenantId: input.context.tenantId,
     projectUserId: input.access.project.user_id, authorizedVersion: input.access.version,
-  });
-  return { items, fixedDiscountEvidence, v3MarginEvidence };
+  }));
+  return {
+    items: await items,
+    fixedDiscountEvidence: await fixedDiscountEvidence,
+    v3MarginEvidence: await v3MarginEvidence,
+  };
 }
 
 type ApprovalEvaluationSources = Awaited<ReturnType<typeof loadApprovalEvaluationSources>>;
@@ -397,30 +404,7 @@ function buildApprovalEvaluationInput(input: {
     tenantId: context.tenantId,
     fixedDiscountEvidence: sources.fixedDiscountEvidence,
     v3MarginEvidence: sources.v3MarginEvidence,
-    version: {
-      id: access.version.id,
-      project_id: access.version.project_id,
-      total_ht_cents: access.version.total_ht_cents,
-      margin_bp: access.version.margin_bp,
-      margin_multiplier: access.version.margin_multiplier,
-      margin_mode: access.version.margin_mode,
-      discount_bp: access.version.discount_bp,
-      discount_amount_cents: access.version.discount_amount_cents,
-      gross_ht_cents: access.version.gross_ht_cents,
-      discount_applied_cents: access.version.discount_applied_cents,
-      tenant_id: access.version.tenant_id,
-      status: access.version.status,
-      updated_at: access.version.updated_at,
-      calc_engine_version: access.version.calc_engine_version,
-      content_revision: access.version.content_revision,
-      calc_snapshot_content_revision:
-        access.version.calc_snapshot_content_revision,
-      calc_snapshot_context: access.version.calc_snapshot_context,
-    },
-    project: {
-      id: access.project.id,
-      client_name: access.project.client_name,
-    },
+    ...toRulesEngineInput(access.version, access.project),
     items: sources.items,
   };
 }
